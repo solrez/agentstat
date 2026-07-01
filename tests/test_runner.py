@@ -53,36 +53,109 @@ def test_to_openai_tools_rewrites_dict_type():
     assert tools[0]["function"]["parameters"]["type"] == "object"
 
 
+def test_to_openai_tools_sanitizes_nested_nonstandard_types():
+    # The bug that killed the 70b run: non-standard types nested deep in the
+    # schema ("any", "float", "tuple") must all be rewritten, not just top-level.
+    fn = {
+        "name": "f",
+        "description": "d",
+        "parameters": {
+            "type": "dict",
+            "properties": {
+                "data": {"type": "any"},                      # -> string
+                "ratio": {"type": "float"},                   # -> number
+                "coords": {"type": "tuple", "items": {"type": "float"}},  # -> array/number
+                "nested": {
+                    "type": "dict",
+                    "properties": {"x": {"type": "any"}},     # deep -> string
+                },
+            },
+            "required": ["data"],
+        },
+    }
+    params = to_openai_tools([fn])[0]["function"]["parameters"]
+    props = params["properties"]
+    assert params["type"] == "object"
+    assert props["data"]["type"] == "string"
+    assert props["ratio"]["type"] == "number"
+    assert props["coords"]["type"] == "array"
+    assert props["coords"]["items"]["type"] == "number"
+    assert props["nested"]["type"] == "object"
+    assert props["nested"]["properties"]["x"]["type"] == "string"
+
+
 def test_run_config_scores_correct_call():
     prov = FakeProvider({"good-model": "calculate_triangle_area"})
     cfg = Config(id="good", provider="openrouter", model="good-model")
-    results = run_config(cfg, [ITEM], seeds=(0,), provider=prov)
+    results, failed = run_config(cfg, [ITEM], seeds=(0,), provider=prov)
     assert len(results) == 1
     assert results[0].score == 1.0
     assert results[0].config_id == "good"
     assert results[0].item_id == "simple_python_0"
+    assert failed == set()
 
 
 def test_run_config_scores_wrong_call():
     prov = FakeProvider({"bad-model": "wrong_function"})
     cfg = Config(id="bad", provider="openrouter", model="bad-model")
-    results = run_config(cfg, [ITEM], seeds=(0,), provider=prov)
+    results, _ = run_config(cfg, [ITEM], seeds=(0,), provider=prov)
     assert results[0].score == 0.0
 
 
 def test_run_config_no_call_scores_zero():
     prov = FakeProvider({})  # returns no tool call
     cfg = Config(id="silent", provider="openrouter", model="silent-model")
-    results = run_config(cfg, [ITEM], seeds=(0,), provider=prov)
+    results, _ = run_config(cfg, [ITEM], seeds=(0,), provider=prov)
     assert results[0].score == 0.0
 
 
 def test_multiple_seeds_produce_multiple_results():
     prov = FakeProvider({"m": "calculate_triangle_area"})
     cfg = Config(id="c", provider="openrouter", model="m")
-    results = run_config(cfg, [ITEM], seeds=(0, 1, 2), provider=prov)
+    results, _ = run_config(cfg, [ITEM], seeds=(0, 1, 2), provider=prov)
     assert len(results) == 3
     assert {r.seed for r in results} == {0, 1, 2}
+
+
+class ExplodingProvider:
+    """Fails on a specific item id; succeeds otherwise."""
+
+    def __init__(self, bad_item_id):
+        self.bad_item_id = bad_item_id
+        self.last_call_cached = False
+
+    def chat(self, model, messages, tools, temperature, seed):
+        # We can't see item_id directly; encode it in the prompt for the fake.
+        if self.bad_item_id in messages[0]["content"]:
+            raise RuntimeError("simulated 422")
+        return {"choices": [{"message": {"tool_calls": [
+            {"function": {"name": "calculate_triangle_area",
+                          "arguments": '{"base": 10, "height": 5}'}}]}}]}
+
+
+def test_run_config_skips_failed_item():
+    good = ITEM
+    bad = BFCLItem(id="simple_python_BAD", prompt="BAD_MARKER trigger failure",
+                   functions=ITEM.functions, ground_truth=ITEM.ground_truth)
+    prov = ExplodingProvider(bad_item_id="BAD_MARKER")
+    cfg = Config(id="c", provider="openrouter", model="m")
+    results, failed = run_config(cfg, [good, bad], seeds=(0, 1), provider=prov)
+    # good item -> 2 results; bad item -> skipped entirely, no partial rows.
+    assert {r.item_id for r in results} == {"simple_python_0"}
+    assert len(results) == 2
+    assert failed == {"simple_python_BAD"}
+
+
+def test_run_config_reraises_when_not_skipping():
+    bad = BFCLItem(id="b", prompt="BAD_MARKER", functions=ITEM.functions,
+                   ground_truth=ITEM.ground_truth)
+    prov = ExplodingProvider(bad_item_id="BAD_MARKER")
+    cfg = Config(id="c", provider="openrouter", model="m")
+    try:
+        run_config(cfg, [bad], seeds=(0,), provider=prov, skip_errors=False)
+        assert False, "should have raised"
+    except RuntimeError:
+        pass
 
 
 def test_run_benchmark_shares_item_set_across_configs():
@@ -91,10 +164,10 @@ def test_run_benchmark_shares_item_set_across_configs():
         Config(id="a", provider="openrouter", model="m1"),
         Config(id="b", provider="openrouter", model="m2"),
     ]
-    # Inject the same fake provider into both by patching run_config's default.
     results = []
     for cfg in configs:
-        results.extend(run_config(cfg, [ITEM], seeds=(0,), provider=prov))
+        res, _ = run_config(cfg, [ITEM], seeds=(0,), provider=prov)
+        results.extend(res)
     items_per_config = {}
     for r in results:
         items_per_config.setdefault(r.config_id, set()).add(r.item_id)
@@ -102,10 +175,39 @@ def test_run_benchmark_shares_item_set_across_configs():
     assert items_per_config["a"] == items_per_config["b"]
 
 
+def test_run_benchmark_drops_item_failed_by_any_config(monkeypatch):
+    # config 'a' fails on the bad item; the whole benchmark must drop that item
+    # for config 'b' too, keeping the item set paired.
+    from agentstat.harness import runner as runner_mod
+
+    good = ITEM
+    bad = BFCLItem(id="simple_python_BAD", prompt="BAD_MARKER",
+                   functions=ITEM.functions, ground_truth=ITEM.ground_truth)
+
+    def fake_provider_for(config):
+        if config.id == "a":
+            return ExplodingProvider(bad_item_id="BAD_MARKER")
+        # config b succeeds on everything
+        return ExplodingProvider(bad_item_id="__never__")
+
+    # Patch run_config to inject a per-config provider.
+    orig = runner_mod.run_config
+    def patched(config, items, seeds=(0,), provider=None, **kw):
+        return orig(config, items, seeds=seeds, provider=fake_provider_for(config), **kw)
+    monkeypatch.setattr(runner_mod, "run_config", patched)
+
+    configs = [Config(id="a", provider="openrouter", model="m"),
+               Config(id="b", provider="openrouter", model="m")]
+    results = run_benchmark(configs, [good, bad], seeds=(0,))
+    # BAD item dropped for BOTH configs; only the good item survives, x2 configs.
+    assert {r.item_id for r in results} == {"simple_python_0"}
+    assert {r.config_id for r in results} == {"a", "b"}
+
+
 def test_save_and_load_roundtrip(tmp_path):
     prov = FakeProvider({"m": "calculate_triangle_area"})
     cfg = Config(id="c", provider="openrouter", model="m")
-    results = run_config(cfg, [ITEM], seeds=(0, 1), provider=prov)
+    results, _ = run_config(cfg, [ITEM], seeds=(0, 1), provider=prov)
     path = tmp_path / "results.jsonl"
     save_results(results, path)
     loaded = load_results(path)

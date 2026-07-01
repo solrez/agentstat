@@ -41,16 +41,22 @@ def run_config(
     provider: ChatProvider | None = None,
     logger: logging.Logger | None = None,
     log_every: int = 25,
-) -> list[EvalResult]:
-    """Evaluate one config over ``items`` across ``seeds``; return EvalResults.
+    skip_errors: bool = True,
+) -> tuple[list[EvalResult], set[str]]:
+    """Evaluate one config over ``items`` across ``seeds``.
 
-    Logs per-config progress at ``log_every``-call cadence, distinguishes cached
-    from live calls, records the running accuracy, and logs any call that errors
-    (the error is re-raised — a failed call should not silently score 0).
+    Returns ``(results, failed_item_ids)``. When a call errors and ``skip_errors``
+    is True, the whole item (all its seeds) is logged and skipped, and its id is
+    added to ``failed_item_ids`` so the caller can keep the item set paired across
+    configs. With ``skip_errors=False`` the error is re-raised.
+
+    Logs per-config progress at ``log_every``-call cadence, distinguishing cached
+    from live calls and tracking running accuracy.
     """
     log = logger or _log
     prov = provider or ChatProvider(provider=config.provider)
     results: list[EvalResult] = []
+    failed: set[str] = set()
 
     total = len(items) * len(seeds)
     log.info("config %s: starting %d calls (%d items x %d seeds), model=%s",
@@ -63,8 +69,9 @@ def run_config(
     for item in items:
         tools = to_openai_tools(item.functions)
         messages = [{"role": "user", "content": item.prompt}]
-        for seed in seeds:
-            try:
+        item_results: list[EvalResult] = []
+        try:
+            for seed in seeds:
                 response = prov.chat(
                     model=config.model,
                     messages=messages,
@@ -72,45 +79,51 @@ def run_config(
                     temperature=config.temperature,
                     seed=seed,
                 )
-            except Exception:
-                log.exception("config %s: call failed on item=%s seed=%s",
-                              config.id, item.id, seed)
-                raise
-
-            # Providers that support caching expose last_call_cached; others
-            # simply report False (the runner stays decoupled from the impl).
-            cached = getattr(prov, "last_call_cached", False)
-            name, args = extract_call(response)
-            score = score_prediction(name, args, item.ground_truth)
-            results.append(
-                EvalResult(
-                    config_id=config.id,
-                    item_id=item.id,
-                    score=score,
-                    seed=seed,
-                    prompt_variant=None,
-                    metadata={
-                        "provider": config.provider,
-                        "model": config.model,
-                        "temperature": config.temperature,
-                        "predicted_name": name,
-                    },
+                # Providers that support caching expose last_call_cached; others
+                # report False (the runner stays decoupled from the impl).
+                cached = getattr(prov, "last_call_cached", False)
+                name, args = extract_call(response)
+                score = score_prediction(name, args, item.ground_truth)
+                item_results.append(
+                    EvalResult(
+                        config_id=config.id,
+                        item_id=item.id,
+                        score=score,
+                        seed=seed,
+                        prompt_variant=None,
+                        metadata={
+                            "provider": config.provider,
+                            "model": config.model,
+                            "temperature": config.temperature,
+                            "predicted_name": name,
+                        },
+                    )
                 )
-            )
-            done += 1
-            n_cached += int(cached)
-            n_pass += int(score == 1.0)
-            if done % log_every == 0 or done == total:
+                n_cached += int(cached)
+                n_pass += int(score == 1.0)
+                done += 1
+        except Exception:
+            log.exception("config %s: item=%s failed", config.id, item.id)
+            if not skip_errors:
+                raise
+            failed.add(item.id)
+            done += len(seeds) - len(item_results)  # account for the skipped seeds
+            continue  # drop this item's partial results entirely
+        else:
+            results.extend(item_results)
+        finally:
+            if done % log_every < len(seeds) or done >= total:
                 rate = done / max(time.time() - t0, 1e-6)
                 log.info(
-                    "config %s: %d/%d (%.0f%%) | acc=%.3f | %d cached | %.1f calls/s",
+                    "config %s: %d/%d (%.0f%%) | acc=%.3f | %d cached | %d failed | %.1f calls/s",
                     config.id, done, total, 100 * done / total,
-                    n_pass / done, n_cached, rate,
+                    n_pass / max(done - len(failed) * len(seeds), 1),
+                    n_cached, len(failed), rate,
                 )
 
-    log.info("config %s: done. acc=%.3f (n=%d), %d/%d from cache",
-             config.id, n_pass / total, total, n_cached, total)
-    return results
+    log.info("config %s: done. acc=%.3f, %d cached, %d items failed",
+             config.id, n_pass / max(len(results), 1), n_cached, len(failed))
+    return results, failed
 
 
 def run_benchmark(
@@ -118,16 +131,39 @@ def run_benchmark(
     items: list[BFCLItem],
     seeds: tuple[int, ...] = (0,),
     logger: logging.Logger | None = None,
+    skip_errors: bool = True,
 ) -> list[EvalResult]:
-    """Run every config over the SAME items (shared-item-set invariant)."""
+    """Run every config over the SAME items, preserving the paired-item invariant.
+
+    Any item that fails for *any* config is dropped from *every* config's results,
+    so all configs share an identical item set (what ``ranking_stability`` and
+    ``paired_bootstrap_diff`` require).
+    """
     log = logger or _log
     log.info("benchmark: %d configs x %d items x %d seeds = %d total calls",
              len(configs), len(items), len(seeds),
              len(configs) * len(items) * len(seeds))
-    all_results: list[EvalResult] = []
+
+    per_config: list[list[EvalResult]] = []
+    all_failed: set[str] = set()
     for config in configs:
-        all_results.extend(run_config(config, items, seeds=seeds, logger=log))
-    log.info("benchmark: complete, %d results", len(all_results))
+        res, failed = run_config(
+            config, items, seeds=seeds, logger=log, skip_errors=skip_errors
+        )
+        per_config.append(res)
+        all_failed |= failed
+
+    if all_failed:
+        log.warning("dropping %d item(s) that failed for at least one config, "
+                    "to keep the item set paired: %s",
+                    len(all_failed), sorted(all_failed))
+
+    all_results = [
+        r for res in per_config for r in res if r.item_id not in all_failed
+    ]
+    log.info("benchmark: complete, %d results across %d items",
+             len(all_results),
+             len({r.item_id for r in all_results}))
     return all_results
 
 

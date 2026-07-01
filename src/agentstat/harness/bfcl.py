@@ -92,17 +92,46 @@ def load_bfcl_simple(
     return items
 
 
+# BFCL uses non-standard JSON-schema type names; map them to valid ones. OpenAI-
+# compatible providers reject anything outside the standard set (e.g. DeepInfra
+# returns 422 on "any"/"dict"/"float"/"tuple").
+_BFCL_TYPE_MAP = {
+    "dict": "object",
+    "float": "number",
+    "tuple": "array",
+    "any": "string",   # "any" has no JSON-schema equivalent; string is the safe fallback
+}
+
+
+def _sanitize_schema(node: Any) -> Any:
+    """Recursively rewrite BFCL's non-standard ``type`` names to valid JSON schema.
+
+    Walks the whole parameter tree — nested ``properties``, ``items``, etc. — so
+    a bad type deep in the schema (which killed the 70b run at simple_python_109)
+    is fixed, not just the top level.
+    """
+    if isinstance(node, dict):
+        out = {}
+        for k, v in node.items():
+            if k == "type" and isinstance(v, str) and v in _BFCL_TYPE_MAP:
+                out[k] = _BFCL_TYPE_MAP[v]
+            else:
+                out[k] = _sanitize_schema(v)
+        return out
+    if isinstance(node, list):
+        return [_sanitize_schema(v) for v in node]
+    return node
+
+
 def to_openai_tools(functions: list[dict[str, Any]]) -> list[dict]:
     """Convert BFCL function defs to OpenAI tool-call format.
 
-    BFCL uses a non-standard ``"type": "dict"`` for object params; OpenAI expects
-    ``"object"``. We rewrite that at the top level of each parameter schema.
+    BFCL uses non-standard JSON-schema type names (``dict``, ``float``, ``tuple``,
+    ``any``); we recursively rewrite them to valid types the provider accepts.
     """
     tools = []
     for fn in functions:
-        params = json.loads(json.dumps(fn.get("parameters", {})))  # deep copy
-        if params.get("type") == "dict":
-            params["type"] = "object"
+        params = _sanitize_schema(fn.get("parameters", {}))
         tools.append(
             {
                 "type": "function",
