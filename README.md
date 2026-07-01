@@ -44,6 +44,37 @@ nondeterminism is ~1%. The practical consequence: adding more *seeds* barely
 tightens your estimate — adding more *items* does. Most eval reports spend their
 compute budget in the wrong place.
 
+## The agent extension: outcome is stable, *process* is not
+
+The single-turn work above measures *whether* a model answers correctly. For a
+multi-turn agent there's a second axis single-turn evals have no equivalent for:
+*how many steps it takes to get there*. We ran a no-execution rollout over BFCL's
+`multi_turn` episodes (57 tasks × 3 seeds) and decomposed both.
+
+![Multi-turn agent variance](figures/03_agent_variance.png)
+
+- **Panel A — success variance looks just like single-turn.** Item 85%, seed 1%.
+  So the popular worry that agent *success* is seed-fragile **did not hold here** —
+  outcome variance is dominated by which task you picked, same as single-turn.
+- **Panel B — but the *trajectory* is highly nondeterministic.** On the **identical
+  task**, the agent's tool-call count varies by **~2.6 calls (SD)** across seeds;
+  **58% of tasks** produce a different number of tool calls on rerun, and the
+  extremes are large — one task ranges **14→46 calls**, another **34→62**, purely
+  from the seed.
+
+**The takeaway:** *whether* the agent succeeds is stable across seeds; *how* it
+gets there is not. Cost, latency, and reliability all live in that process
+variance — and a success-only metric (all that single-turn analysis can see) is
+blind to it. Measuring only pass/fail understates agent-eval noise on every axis
+except the one people report.
+
+> **Honesty caveat:** this uses a *no-execution* rollout (tool calls are counted,
+> not executed against real state) and a *proxy* success signal (recall of
+> ground-truth call names), so it is a **variance demonstration, not an official
+> BFCL score**. The trajectory-variance result stands regardless — it's about the
+> spread of the agent's own behavior — but the absolute success rate is a proxy.
+> Vendoring BFCL's stateful scorer is the follow-up if a citable number is needed.
+
 ---
 
 ## Positioning (honest framing)
@@ -84,16 +115,22 @@ Requires Python 3.12+ and [uv](https://docs.astral.sh/uv/).
 
 ```bash
 uv sync --extra dev --extra plot     # venv + install
-uv run pytest                        # 91 tests, stats validated vs scipy + ground truth
+uv run pytest                        # 102 tests, stats validated vs scipy + ground truth
 ```
 
-## Reproduce the headline
+## Reproduce the findings
 
 ```bash
 cp .env.example .env                 # add DEEPINFRA_API_KEY (or OPENROUTER_API_KEY)
+
+# Single-turn: ranking instability + variance (figures 01, 02)
 uv run python experiments/run_bfcl.py            # run the benchmark (cached; ~$0.05, ~7 min)
-uv run python experiments/01_ranking_instability.py   # -> figures/01_ranking_instability.png
-uv run python experiments/02_agent_variance.py        # -> figures/02_variance_components.png
+uv run python experiments/01_ranking_instability.py
+uv run python experiments/02_agent_variance.py
+
+# Multi-turn agent: the two-panel trajectory-variance finding (figure 03)
+uv run python experiments/run_multiturn.py       # no-execution rollouts (cached)
+uv run python experiments/03_agent_variance.py
 ```
 
 No API key? Both experiments fall back to a frozen semi-synthetic fixture
