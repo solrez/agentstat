@@ -16,5 +16,11 @@ htmlcov/
 .cache/
 *.cache
 
+# Run logs (runtime artifacts)
+logs/
+
+# Benchmark results (regenerable from cache; large)
+results/
+
 # OS
 .DS_Store

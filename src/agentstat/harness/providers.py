@@ -50,6 +50,7 @@ class ChatProvider:
     cache: ResponseCache = field(default_factory=ResponseCache)
     timeout: float = 120.0
     max_retries: int = 3
+    last_call_cached: bool = field(default=False, init=False)
 
     def __post_init__(self):
         if self.provider not in _PROVIDERS:
@@ -110,9 +111,11 @@ class ChatProvider:
         if use_cache:
             hit = self.cache.get(cache_payload)
             if hit is not None:
+                self.last_call_cached = True
                 return hit
 
         response = self._post(payload)
+        self.last_call_cached = False
 
         if use_cache:
             self.cache.set(cache_payload, response)
