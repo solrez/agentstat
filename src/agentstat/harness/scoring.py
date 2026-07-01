@@ -107,3 +107,22 @@ def extract_call(response: dict[str, Any]) -> tuple[str | None, dict[str, Any] |
         return name, args
 
     return None, None
+
+
+def extract_all_calls(response: dict[str, Any]) -> list[tuple[str, dict[str, Any] | None]]:
+    """Pull ALL (name, args) tool calls from a response (multi-turn agents call
+    several tools per step). Returns [] when the model emitted no tool call."""
+    try:
+        message = response["choices"][0]["message"]
+    except (KeyError, IndexError):
+        return []
+    calls = []
+    for tc in message.get("tool_calls") or []:
+        fn = tc.get("function", {})
+        raw = fn.get("arguments", "{}")
+        try:
+            args = json.loads(raw) if isinstance(raw, str) else raw
+        except json.JSONDecodeError:
+            args = None
+        calls.append((fn.get("name"), args))
+    return calls
