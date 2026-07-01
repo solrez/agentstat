@@ -50,7 +50,11 @@ def score_prediction(
     """
     if predicted_name is None:
         return 0.0
-    predicted_args = predicted_args or {}
+    # A malformed prediction (args not a flat dict — e.g. the model emitted a
+    # list of calls, or nested the arguments) is a model failure, not an infra
+    # error: it must score 0.0, never raise. Anything non-dict fails the match.
+    if not isinstance(predicted_args, dict):
+        return 0.0
 
     for gt_call in ground_truth:
         for gt_name, gt_args in gt_call.items():
@@ -62,8 +66,12 @@ def score_prediction(
 
 
 def _args_match(pred_args: dict[str, Any], gt_args: dict[str, list]) -> bool:
-    # No hallucinated params.
-    if any(k not in gt_args for k in pred_args):
+    # No hallucinated params. Guard hashing: a dict/list key (from a malformed
+    # prediction) is never a valid arg name -> no match.
+    try:
+        if any(k not in gt_args for k in pred_args):
+            return False
+    except TypeError:
         return False
     for arg_name, acceptable in gt_args.items():
         optional = "" in acceptable

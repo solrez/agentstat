@@ -70,6 +70,22 @@ def test_no_call_predicted_fails():
     assert score_prediction(None, None, GT) == 0.0
 
 
+def test_malformed_list_args_scores_zero_not_crash():
+    # The real crash: model returned arguments as a LIST of dicts (parallel calls
+    # jammed into one arguments field). Must score 0.0, never raise. (simple_python_129)
+    bad = [{"base": "10"}, {"base": "10"}]
+    assert score_prediction("calculate_triangle_area", bad, GT) == 0.0
+
+
+def test_dict_keyed_args_scores_zero_not_crash():
+    # Defensive: even if an arg dict somehow has an unhashable key, no TypeError.
+    from agentstat.harness.scoring import _args_match
+    assert _args_match({"base": 10}, {"base": [10], "height": [5]}) is False  # missing height
+    # non-dict pred is rejected upstream by score_prediction:
+    assert score_prediction("calculate_triangle_area", "not a dict", GT) == 0.0
+    assert score_prediction("calculate_triangle_area", 42, GT) == 0.0
+
+
 def test_multi_acceptable_values():
     gt = [{"greet": {"lang": ["en", "english"]}}]
     assert score_prediction("greet", {"lang": "english"}, gt) == 1.0
