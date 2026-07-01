@@ -15,16 +15,17 @@ from agentstat.harness.runner import Config, run_benchmark, save_results
 from agentstat.logging_utils import get_logger
 
 CONFIGS = [
-    Config(id="llama-3.1-70b", provider="deepinfra",
-           model="meta-llama/Meta-Llama-3.1-70B-Instruct"),
-    Config(id="qwen2.5-7b", provider="deepinfra",
-           model="Qwen/Qwen2.5-7B-Instruct"),
-    Config(id="llama-3.1-8b", provider="deepinfra",
-           model="meta-llama/Meta-Llama-3.1-8B-Instruct"),
+    Config(id="nemotron-3-120b", provider="deepinfra",
+           model="nvidia/NVIDIA-Nemotron-3-Super-120B-A12B"),
+    Config(id="deepseek-v4-flash", provider="deepinfra",
+           model="deepseek-ai/DeepSeek-V4-Flash"),
+    Config(id="gemma-4-26b", provider="deepinfra",
+           model="google/gemma-4-26B-A4B-it"),
 ]
 
 N_ITEMS = 200
 SEEDS = (0, 1, 2)
+MAX_WORKERS = 8
 OUT = Path("results/bfcl_simple.jsonl")
 
 
@@ -35,7 +36,8 @@ def main():
     items = load_bfcl_simple(category="simple_python", limit=N_ITEMS)
     log.info("Loaded %d BFCL simple items.", len(items))
 
-    results = run_benchmark(CONFIGS, items, seeds=SEEDS, logger=log)
+    results = run_benchmark(CONFIGS, items, seeds=SEEDS, logger=log,
+                            max_workers=MAX_WORKERS)
     save_results(results, OUT)
 
     # Quick per-config accuracy summary.

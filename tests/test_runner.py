@@ -204,6 +204,69 @@ def test_run_benchmark_drops_item_failed_by_any_config(monkeypatch):
     assert {r.config_id for r in results} == {"a", "b"}
 
 
+def test_concurrent_run_all_results_present_and_correct():
+    # Many items through the thread pool: no results lost, no double-count,
+    # counts consistent under concurrency.
+    import threading
+
+    class CountingProvider:
+        def __init__(self):
+            self.last_call_cached = False
+            self._n = 0
+            self._lock = threading.Lock()
+
+        def chat(self, model, messages, tools, temperature, seed):
+            with self._lock:
+                self._n += 1
+            return {"choices": [{"message": {"tool_calls": [
+                {"function": {"name": "calculate_triangle_area",
+                              "arguments": '{"base": 10, "height": 5}'}}]}}]}
+
+    items = [
+        BFCLItem(id=f"simple_python_{i}", prompt=f"item {i}",
+                 functions=ITEM.functions, ground_truth=ITEM.ground_truth)
+        for i in range(50)
+    ]
+    prov = CountingProvider()
+    cfg = Config(id="c", provider="openrouter", model="m")
+    results, failed = run_config(cfg, items, seeds=(0, 1), provider=prov,
+                                 max_workers=8)
+    assert failed == set()
+    assert len(results) == 100                      # 50 items x 2 seeds
+    assert len({r.item_id for r in results}) == 50  # every item present once-per-seed
+    assert prov._n == 100                           # exactly one call per (item, seed)
+    assert all(r.score == 1.0 for r in results)
+
+
+def test_concurrent_skips_failed_items_only():
+    import threading
+
+    class SometimesFails:
+        def __init__(self):
+            self.last_call_cached = False
+            self._lock = threading.Lock()
+
+        def chat(self, model, messages, tools, temperature, seed):
+            if "FAIL" in messages[0]["content"]:
+                raise RuntimeError("boom")
+            return {"choices": [{"message": {"tool_calls": [
+                {"function": {"name": "calculate_triangle_area",
+                              "arguments": '{"base": 10, "height": 5}'}}]}}]}
+
+    items = []
+    for i in range(20):
+        prompt = "FAIL" if i % 5 == 0 else f"ok {i}"  # 4 of 20 fail
+        items.append(BFCLItem(id=f"simple_python_{i}", prompt=prompt,
+                              functions=ITEM.functions, ground_truth=ITEM.ground_truth))
+    prov = SometimesFails()
+    cfg = Config(id="c", provider="openrouter", model="m")
+    results, failed = run_config(cfg, items, seeds=(0,), provider=prov, max_workers=8)
+    assert len(failed) == 4
+    assert len(results) == 16
+    # No partial rows from failed items.
+    assert failed.isdisjoint({r.item_id for r in results})
+
+
 def test_save_and_load_roundtrip(tmp_path):
     prov = FakeProvider({"m": "calculate_triangle_area"})
     cfg = Config(id="c", provider="openrouter", model="m")
