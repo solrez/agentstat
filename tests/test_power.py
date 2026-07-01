@@ -1,0 +1,66 @@
+"""Power analysis validated against known textbook answers."""
+
+import pytest
+
+from agentstat.core.power import (
+    required_n,
+    achieved_power,
+    required_n_proportions,
+)
+
+
+def test_required_n_matches_textbook_cohens_d():
+    # Cohen's d = 0.5 (medium effect), alpha=.05, power=.8, two-sided:
+    # the classic answer is ~64 per group.
+    n = required_n(effect_size=0.5, variance=1.0, alpha=0.05, power=0.8)
+    assert 62 <= n <= 66
+
+
+def test_required_n_large_effect_needs_fewer():
+    small_effect = required_n(effect_size=0.2, variance=1.0)
+    large_effect = required_n(effect_size=0.8, variance=1.0)
+    assert large_effect < small_effect
+
+
+def test_required_n_more_variance_needs_more():
+    low_var = required_n(effect_size=0.5, variance=1.0)
+    high_var = required_n(effect_size=0.5, variance=4.0)
+    assert high_var > low_var
+
+
+def test_achieved_power_round_trips_with_required_n():
+    # If required_n says n suffices for 80% power, achieved_power at that n
+    # should be >= 0.8.
+    n = required_n(effect_size=0.5, variance=1.0, power=0.8)
+    power = achieved_power(n, effect_size=0.5, variance=1.0)
+    assert power >= 0.8
+
+
+def test_achieved_power_increases_with_n():
+    p_small = achieved_power(20, effect_size=0.5, variance=1.0)
+    p_large = achieved_power(200, effect_size=0.5, variance=1.0)
+    assert p_large > p_small
+    assert 0.0 <= p_small <= 1.0 and 0.0 <= p_large <= 1.0
+
+
+def test_required_n_proportions_sane():
+    # Distinguishing 70% vs 60% pass rate needs a few hundred per group.
+    n = required_n_proportions(0.7, 0.6, alpha=0.05, power=0.8)
+    assert 300 <= n <= 450
+
+
+def test_required_n_proportions_bigger_gap_needs_fewer():
+    close = required_n_proportions(0.55, 0.50)
+    far = required_n_proportions(0.90, 0.50)
+    assert far < close
+
+
+def test_power_rejects_bad_input():
+    with pytest.raises(ValueError):
+        required_n(effect_size=0.0, variance=1.0)
+    with pytest.raises(ValueError):
+        required_n(effect_size=0.5, variance=0.0)
+    with pytest.raises(ValueError):
+        achieved_power(1, effect_size=0.5, variance=1.0)
+    with pytest.raises(ValueError):
+        required_n_proportions(0.5, 0.5)
