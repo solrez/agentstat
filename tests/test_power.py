@@ -2,10 +2,13 @@
 
 import pytest
 
+import numpy as np
+
 from agentstat.core.power import (
     required_n,
     achieved_power,
     required_n_proportions,
+    pairwise_power,
 )
 
 
@@ -64,3 +67,55 @@ def test_power_rejects_bad_input():
         achieved_power(1, effect_size=0.5, variance=1.0)
     with pytest.raises(ValueError):
         required_n_proportions(0.5, 0.5)
+
+
+# ---- pairwise (paired) power ----
+
+def test_pairwise_power_big_stable_gap_is_powered():
+    # A large, consistent per-item advantage -> high power, small required_n.
+    rng = np.random.default_rng(0)
+    n = 300
+    item = rng.normal(0, 1, n)
+    a = item + 1.0 + rng.normal(0, 0.2, n)
+    b = item + 0.0 + rng.normal(0, 0.2, n)
+    pw = pairwise_power(a, b)
+    assert pw.observed_diff > 0
+    assert pw.achieved_power > 0.8
+    assert not pw.underpowered
+    assert pw.required_n < n
+
+
+def test_pairwise_power_tiny_gap_is_underpowered():
+    # A tiny gap swamped by per-item noise -> low power, huge required_n.
+    rng = np.random.default_rng(1)
+    n = 200
+    item = rng.normal(0, 1, n)
+    a = item + 0.02 + rng.normal(0, 0.5, n)
+    b = item + 0.00 + rng.normal(0, 0.5, n)
+    pw = pairwise_power(a, b)
+    assert pw.underpowered
+    assert pw.required_n > n
+
+
+def test_pairwise_power_more_items_needed_than_run_when_low_power():
+    # Sanity: if achieved power < target, required_n must exceed n_items.
+    rng = np.random.default_rng(2)
+    n = 100
+    a = rng.binomial(1, 0.52, n).astype(float)
+    b = rng.binomial(1, 0.50, n).astype(float)
+    pw = pairwise_power(a, b)
+    if pw.underpowered and pw.observed_diff != 0:
+        assert pw.required_n > pw.n_items
+
+
+def test_pairwise_power_identical_arms():
+    x = [1.0, 0.0, 1.0, 1.0, 0.0]
+    pw = pairwise_power(x, x)
+    assert pw.observed_diff == 0.0
+    assert pw.achieved_power == 0.0        # can't power a zero effect
+    assert pw.required_n >= 10**9
+
+
+def test_pairwise_power_length_mismatch():
+    with pytest.raises(ValueError):
+        pairwise_power([1.0, 0.0, 1.0], [1.0, 0.0])

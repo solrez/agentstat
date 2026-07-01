@@ -17,6 +17,7 @@ from agentstat.harness.runner import load_results
 from agentstat.harness.fixture import make_frozen_results
 from agentstat.ranking.stability import ranking_stability
 from agentstat.core.bootstrap import bootstrap_ci
+from agentstat.core.power import pairwise_power
 
 RESULTS = Path("results/bfcl_simple.jsonl")
 FIG_DIR = Path("figures")
@@ -57,14 +58,46 @@ def main():
 
     print(f"\n  Pairwise P(row ranks above col):")
     configs = stab.point_ranking
+    seen_pairs = set()
     for a in configs:
         for b in configs:
-            if a != b:
+            if a != b and (b, a) not in seen_pairs:
+                seen_pairs.add((a, b))
                 p = stab.pairwise_win_prob[(a, b)]
                 if 0.05 < p < 0.95:  # highlight the contestable pairs
                     print(f"    {a} > {b}: {p:.2f}  <-- not decisive")
 
+    # Power: for each pair, how many items would you need to trust the call?
+    print(f"\n=== Power: items needed to resolve each pair (paired, 80% power) ===")
+    scores_by_item = _per_item_scores(results)
+    for a, b in _all_pairs(configs):
+        arr_a, arr_b = _aligned(scores_by_item, a, b)
+        pw = pairwise_power(arr_a, arr_b)
+        flag = "UNDERPOWERED" if pw.underpowered else "ok"
+        print(f"    {a} vs {b}: gap={pw.observed_diff:+.3f} | power={pw.achieved_power:.2f} "
+              f"| need ~{pw.required_n} items (have {pw.n_items}) [{flag}]")
+
     _plot(cis, stab, source)
+
+
+def _per_item_scores(results):
+    from collections import defaultdict
+    d = defaultdict(lambda: defaultdict(list))
+    for r in results:
+        d[r.config_id][r.item_id].append(r.score)
+    return {c: {it: sum(v) / len(v) for it, v in items.items()}
+            for c, items in d.items()}
+
+
+def _all_pairs(configs):
+    return [(configs[i], configs[j])
+            for i in range(len(configs)) for j in range(i + 1, len(configs))]
+
+
+def _aligned(scores_by_item, a, b):
+    keys = sorted(set(scores_by_item[a]) & set(scores_by_item[b]))
+    return ([scores_by_item[a][k] for k in keys],
+            [scores_by_item[b][k] for k in keys])
 
 
 def _plot(cis, stab, source):

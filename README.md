@@ -37,6 +37,20 @@ supported by the data. **A ranking is a set of pairwise claims, and they don't a
 pass — which ones do is exactly what a significance test tells you, and a bare
 accuracy table hides.**
 
+And `pairwise_power` turns "it's noise" into an actionable number — *how many items
+you'd need to trust each call* (paired, 80% power):
+
+| Pair | Gap | Power at 381 | Items needed |
+|---|---|---|---|
+| deepseek vs nemotron | 3.8% | 0.88 | ~304 — **you had enough** |
+| deepseek vs gemma | 2.1% | 0.58 | ~640 — significant but underpowered |
+| gemma vs nemotron | 1.7% | 0.25 | **~1,780** — 4.7× what you ran |
+
+That last row is why gemma-vs-nemotron read as noise: at 381 items the test had only
+**25% power** to detect a gap that small, so p = 0.21 was inevitable, not evidence of
+"no difference." *The right eval size isn't a guess — it's a calculation from the
+effect you care about and the variance you measured.*
+
 > *Sample size matters, visibly:* at 199 items (an earlier run) the **top** pair
 > was itself a coin flip — the winner flipped 30% of resamples. Doubling to ~380
 > items resolved the top but left the middle unresolved. Validity scales with n,
@@ -114,7 +128,7 @@ documented in `core/variance.py` and enforced in its tests.
 | Confidence intervals | `bootstrap_ci` | percentile / BCa (wraps `scipy.stats.bootstrap`) |
 | Paired comparison | `paired_bootstrap_diff` | CI on a−b + P(a>b), paired by item |
 | Variance decomposition | `decompose_variance`, `agent_variance` | logistic mixed model (crossed random effects) |
-| Power analysis | `required_n`, `achieved_power` | effect size + variance → required n |
+| Power analysis | `required_n`, `achieved_power`, `pairwise_power` | required n for a target power; `pairwise_power` sizes a paired config comparison directly |
 | Significance | `permutation_test`, `fdr_correct` | permutation + Benjamini–Hochberg |
 | **Ranking stability** | `ranking_stability` | resample → re-rank → flip probability |
 

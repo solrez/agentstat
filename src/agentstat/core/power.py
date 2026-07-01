@@ -11,8 +11,10 @@ Built on ``statsmodels.stats.power``. Two entry points:
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import numpy as np
-from statsmodels.stats.power import TTestIndPower
+from statsmodels.stats.power import TTestIndPower, TTestPower
 from statsmodels.stats.proportion import proportion_effectsize
 
 
@@ -80,3 +82,70 @@ def required_n_proportions(
         effect_size=h, alpha=alpha, power=power, alternative="two-sided"
     )
     return int(np.ceil(n))
+
+
+@dataclass(frozen=True)
+class PairwisePower:
+    """Power analysis for one paired config-vs-config comparison."""
+
+    n_items: int          # items actually run (per config)
+    observed_diff: float  # mean(a) - mean(b) on the shared items
+    achieved_power: float  # power the run actually had for this effect
+    required_n: int       # items needed for the target power
+    target_power: float
+
+    @property
+    def underpowered(self) -> bool:
+        return self.achieved_power < self.target_power
+
+
+def pairwise_power(
+    a,
+    b,
+    alpha: float = 0.05,
+    power: float = 0.8,
+) -> PairwisePower:
+    """Achieved power and required-n for a **paired** config comparison.
+
+    ``a`` and ``b`` are per-item scores for two configs on the SAME items (paired
+    by position). This answers the practical question a ranking raises: *given the
+    gap we observed and its variance, did we run enough items to trust the call,
+    and if not, how many would we need?*
+
+    We size on the paired difference ``d = a - b`` using a one-sample t-power on
+    ``d`` (mean vs 0). This is the correct paired framing — it uses the variance
+    of the per-item differences, which is smaller than the between-config variance
+    because the shared item difficulty cancels. So the ``required_n`` here is
+    generally *lower* (less conservative) than treating a and b as two independent
+    proportion samples.
+    """
+    a = np.asarray(a, dtype=float)
+    b = np.asarray(b, dtype=float)
+    if a.shape != b.shape:
+        raise ValueError("pairwise_power needs equal-length paired arrays")
+    if a.size < 2:
+        raise ValueError("need at least 2 paired observations")
+
+    d = a - b
+    n = d.size
+    sd = d.std(ddof=1)
+    observed_diff = float(d.mean())
+
+    if sd == 0:
+        # No variance in the differences: the gap (if any) is detectable at n=2,
+        # or there is no gap at all.
+        eff_power = 1.0 if observed_diff != 0 else 0.0
+        req = 2 if observed_diff != 0 else 10**9
+        return PairwisePower(n, observed_diff, eff_power, req, power)
+
+    effect = abs(observed_diff) / sd  # standardized paired effect (Cohen's dz)
+    achieved = float(TTestPower().power(effect_size=effect, nobs=n, alpha=alpha,
+                                        alternative="two-sided"))
+    if observed_diff == 0:
+        required = 10**9  # can't power a zero effect
+    else:
+        required = int(np.ceil(
+            TTestPower().solve_power(effect_size=effect, alpha=alpha, power=power,
+                                     alternative="two-sided")
+        ))
+    return PairwisePower(n, observed_diff, achieved, required, power)
