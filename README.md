@@ -2,35 +2,45 @@
 
 > A statistical rigor toolkit for LLM/agent evaluation.
 > Bootstrap CIs, variance decomposition, power analysis, and significance testing —
-> one function call each, plus a reproducible demo that a real benchmark ranking
-> **does not survive resampling**.
+> one function call each, plus a reproducible demo of **which leaderboard
+> differences are real and which are noise**.
 
 ---
 
-## The headline: a leaderboard that reorders under resampling
+## The headline: some of the leaderboard is real, some is a coin flip
 
-We ran three tool-calling models on 199 items of the **BFCL "simple"** benchmark
-(3 seeds each, via DeepInfra) and asked one question: *is the ranking real?*
+We ran three tool-calling models on **381 items** of the **BFCL "simple"**
+benchmark (3 seeds each, via DeepInfra) and asked, for every pair: *is this
+ranking real, or noise?*
 
 ![Ranking instability](figures/01_ranking_instability.png)
 
 | Config | Accuracy | 95% CI (bootstrap BCa) |
 |---|---|---|
-| gemma-4-26b | **0.948** | [0.928, 0.964] |
-| deepseek-v4-flash | 0.943 | [0.921, 0.960] |
-| nemotron-3-120b | 0.916 | [0.893, 0.936] |
+| deepseek-v4-flash | **0.948** | [0.934, 0.960] |
+| gemma-4-26b | 0.927 | [0.911, 0.941] |
+| nemotron-3-120b | 0.910 | [0.892, 0.925] |
 
-By point estimate, `gemma-4-26b` is the "best" config. But that claim is **not
-supported by the data**:
+Point estimates give a clean ranking `deepseek > gemma > nemotron`. But only
+**part** of it survives scrutiny:
 
-- The top rank **flips in 30% of bootstrap resamples**. The full ranking people
-  would quote is only the *most frequent* one **68%** of the time.
-- The gemma-vs-deepseek gap of **0.5 points** has a 95% CI of **[−1.2%, +2.2%]**
-  — it spans zero. A paired permutation test gives **p = 0.74**; the probability
-  gemma truly beats deepseek is only **0.70**, barely better than a coin flip.
+- **The top is real.** `deepseek > gemma` holds: the top rank flips in just **1%**
+  of resamples, the paired difference CI is **[−4.0%, −0.3%]** (excludes zero),
+  permutation **p = 0.036**.
+- **The middle is not.** `gemma > nemotron` is **not** significant: the paired
+  difference CI is **[−0.8%, +4.2%]** (spans zero), **p = 0.21**, and gemma only
+  outranks nemotron in **90%** of resamples. Reported as a ranking, that 2nd-vs-3rd
+  ordering is a coin-flip-ish call dressed up as a result.
 
-So "gemma-4-26b > deepseek-v4-flash on BFCL-simple" is a coin flip dressed up as
-a ranking. **A single accuracy number with no error bar is not a result.**
+So even at ~380 items, one of three pairwise orderings on this leaderboard isn't
+supported by the data. **A ranking is a set of pairwise claims, and they don't all
+pass — which ones do is exactly what a significance test tells you, and a bare
+accuracy table hides.**
+
+> *Sample size matters, visibly:* at 199 items (an earlier run) the **top** pair
+> was itself a coin flip — the winner flipped 30% of resamples. Doubling to ~380
+> items resolved the top but left the middle unresolved. Validity scales with n,
+> and most reported evals use the smaller one.
 
 ## Where does the noise come from?
 
@@ -40,9 +50,10 @@ the score variance across factors:
 ![Variance components](figures/02_variance_components.png)
 
 **84% of the variance is *which items you sampled*** (item difficulty); seed
-nondeterminism is ~1%. The practical consequence: adding more *seeds* barely
-tightens your estimate — adding more *items* does. Most eval reports spend their
-compute budget in the wrong place.
+nondeterminism is **0.3%**. The practical consequence: adding more *seeds* barely
+tightens your estimate — adding more *items* does. (This is exactly why doubling
+the item count above resolved the top ranking while re-running seeds would not
+have.) Most eval reports spend their compute budget on the wrong axis.
 
 ## The agent extension: outcome is stable, *process* is not
 

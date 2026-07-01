@@ -90,8 +90,10 @@ def _plot(cis, stab, source):
     ax.set_yticklabels(configs)
     ax.invert_yaxis()
     ax.set_xlabel("Accuracy (bootstrap BCa 95% CI)")
+    # Report honestly whether the ranking is stable or not — don't hardcode a verdict.
+    verdict = "unstable" if stab.top_flip_prob >= 0.05 else "stable at the top"
     ax.set_title(
-        f"BFCL ranking is unstable: top config flips {stab.top_flip_prob:.0%} "
+        f"BFCL ranking is {verdict}: top config flips {stab.top_flip_prob:.0%} "
         f"of resamples\n({source})", fontsize=11)
     ax.grid(axis="x", alpha=0.3)
     fig.tight_layout()

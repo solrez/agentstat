@@ -23,7 +23,7 @@ CONFIGS = [
            model="google/gemma-4-26B-A4B-it"),
 ]
 
-N_ITEMS = 200
+N_ITEMS = 400
 SEEDS = (0, 1, 2)
 MAX_WORKERS = 8
 OUT = Path("results/bfcl_simple.jsonl")
