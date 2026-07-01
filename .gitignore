@@ -22,5 +22,8 @@ logs/
 # Benchmark results (regenerable from cache; large)
 results/
 
+# Claude Code local settings/state
+.claude/
+
 # OS
 .DS_Store
